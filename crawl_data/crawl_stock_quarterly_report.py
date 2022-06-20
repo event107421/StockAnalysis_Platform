@@ -3,9 +3,9 @@
 '''
 @time: 2021/10/16 下午4:01
 @author: bill (billevent107421@gmail.com)
-@file: crawl_stock_fundamental_data.py
+@file: crawl_stock_quarterly_report.py
 @type: 需求
-@project: 爬取個股每年度股利分派資料、每季財報相關資料，如營收、每季綜合損益表、每季資產負債表、每季現金流量表等資料
+@project: 爬取個股每季財報相關資料，如每季綜合損益表、每季資產負債表、每季現金流量表等資料
 @desc:
 '''
 
@@ -16,128 +16,6 @@ import pandas as pd
 import numpy as np
 from io import StringIO
 
-
-# 爬取公司每年度股利分派資料：https://mops.twse.com.tw/mops/web/t05st09_new
-def get_company_dividend(year):
-    url = 'https://mops.twse.com.tw/server-java/t05st09sub'
-    # 預設網頁post傳送的內容
-    payload_twse = {
-        'step': '1',
-        'TYPEK': 'sii',
-        'YEAR': str(year),
-        'first': '',
-        'qryType': '2'
-    }
-    payload_otc = {
-        'step': '1',
-        'TYPEK': 'otc',
-        'YEAR': str(year),
-        'first': '',
-        'qryType': '2'
-    }
-
-    # 合併爬取上市櫃公司基本資料所需字典資料
-    payload_data = [payload_twse, payload_otc]
-
-    company_dividend = pd.DataFrame()
-    for payload in payload_data:
-        res = requests.post(url, data=payload)
-        # 因網頁原始碼設定為big5，所以要進行轉碼，不然顯示會亂碼
-        res.encoding = 'big5'
-        df = pd.read_html(res.text, flavor='html5lib')
-
-        type_dividend = pd.DataFrame()
-        # 合併股利的資料
-        for data in df:
-            if '公司代號' in data.columns:
-                # 因爬下來的資料有多層欄位名稱，刪除第一層的欄位名稱
-                data.columns = data.columns.droplevel()
-                data = data.drop(['決議（擬議）進度', '期別', '股利所屬 期間', '股東會 日期', '期初未分配盈餘/待彌補虧損(元)',
-                                  '可分配 盈餘(元)', '本期淨利(淨損)(元)', '分配後期末未分配盈餘(元)', '摘錄公司章程-股利分派部分'], axis=1)
-                data.columns = ['stock_code', 'dividend_year', 'dividend_date', 'cash_dividend',
-                                'capital_reserve_cash_dividend_1', 'capital_reserve_cash_dividend_2',
-                                'cash_dividend_total', 'stock_dividend', 'capital_reserve_stock_dividend_1',
-                                'capital_reserve_stock_dividend_2', 'stock_dividend_total', 'remarks']
-                # 只保留代碼即可，中文部分直接串個股基本資料表
-                data['stock_code'] = data['stock_code'].apply(lambda s: s.split('-')[0].replace(' ', ''))
-                # 股利公積的部分因是分為是否法定，所以這邊我們再把他進行加總
-                data['capital_reserve_cash_dividend'] = data['capital_reserve_cash_dividend_1'] + data['capital_reserve_cash_dividend_2']
-                data['capital_reserve_stock_dividend'] = data['capital_reserve_stock_dividend_1'] + data['capital_reserve_stock_dividend_2']
-
-                data = data[['stock_code', 'dividend_year', 'dividend_date', 'cash_dividend',
-                             'capital_reserve_cash_dividend', 'cash_dividend_total', 'stock_dividend',
-                             'capital_reserve_stock_dividend', 'stock_dividend_total', 'remarks']]
-
-                type_dividend = pd.concat([type_dividend, data], axis=0)
-
-        company_dividend = pd.concat([company_dividend, type_dividend])
-
-    return company_dividend
-
-# 爬取營收網址從以下網址來的：https://mops.twse.com.tw/mops/web/t21sc04_ifrs
-def monthly_report(year, month):
-    revenue_year_month = str(year) + '-' + '0' + str(month)
-
-    # 假如是西元，轉成民國
-    if year > 1990:
-        year -= 1911
-
-    url_twse = 'https://mops.twse.com.tw/nas/t21/sii/t21sc03_' + str(year) + '_' + str(month) + '_0.html'
-    url_otc = 'https://mops.twse.com.tw/nas/t21/otc/t21sc03_' + str(year) + '_' + str(month) + '_0.html'
-    if year <= 98:
-        url_twse = 'https://mops.twse.com.tw/nas/t21/sii/t21sc03_' + str(year) + '_' + str(month) + '.html'
-        url_otc = 'https://mops.twse.com.tw/nas/t21/otc/t21sc03_' + str(year) + '_' + str(month) + '.html'
-
-    url_list = [url_twse, url_otc]
-    # 偽瀏覽器
-    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
-
-    result = pd.DataFrame()
-    for url in url_list:
-        # 下載該年月的網站，並用pandas轉換成 dataframe
-        r = requests.get(url, headers=headers)
-        r.encoding = 'big5'
-
-        dfs = pd.read_html(StringIO(r.text), encoding='big-5')
-
-        # 因dfs是聚集了各個產業的營收dataframe的list，所以我們利用for迴圈將其一個一個取出並合併在一起
-        df = pd.concat([df for df in dfs if df.shape[1] <= 11 and df.shape[1] > 5])
-
-        # dir是
-        if 'levels' in dir(df.columns):
-            df.columns = df.columns.get_level_values(1)
-        else:
-            df = df[list(range(0, 10))]
-            column_index = df.index[(df[0] == '公司代號')][0]
-            df.columns = df.iloc[column_index]
-
-        # coerce是
-        df['當月營收'] = pd.to_numeric(df['當月營收'], 'coerce')
-        df = df[~df['當月營收'].isnull()]
-        df = df[df['公司代號'] != '合計']
-
-        result = pd.concat([result, df])
-
-        # 偽停頓
-        time.sleep(5)
-
-    # 因合併資料後產生了多層欄位的index，此部分我們先將其清除
-    result.columns = result.columns.droplevel()
-    # 將欄位重新命名
-    result.rename(columns={'公司代號': 'stock_code', '公司名稱': 'company_name_ch', '備註': 'remark',
-                           '上月比較增減(%)': 'last_month_revenue_change_ratio', '上月營收': 'last_month_gross_revenue',
-                           '去年同月增減(%)': 'last_year_revenue_change_ratio', '去年當月營收': 'last_year_gross_revenue',
-                           '當月營收': 'gross_revenue', '前期比較增減(%)': 'prophase_revenue_change_ratio',
-                           '去年累計營收': 'last_year_accumulation_revenue', '當月累計營收': 'accumulation_revenue'}, inplace=True)
-    result['revenue_year_month'] = revenue_year_month
-    # 調整欄位順序
-    result = result[['stock_code', 'company_name_ch', 'revenue_year_month', 'last_month_revenue_change_ratio',
-                     'last_month_gross_revenue', 'last_year_revenue_change_ratio', 'last_year_gross_revenue',
-                     'gross_revenue', 'prophase_revenue_change_ratio', 'last_year_accumulation_revenue',
-                     'accumulation_revenue']]
-
-    return result
-
 # 預設網頁post傳送的內容
 payload = {
         'encodeURIComponent': '1',
@@ -145,7 +23,7 @@ payload = {
         'firstin': '1',
         'off': '1',
         'isQuery': 'Y'
-    }
+}
 
 # 爬取公司每季綜合損益表：https://mops.twse.com.tw/mops/web/t163sb04
 def get_company_performance(payload_dict):
@@ -372,6 +250,9 @@ def crawl_company_quarterly_report(year_str, season_str, is_financial):
                                   'financing_cash_flows', 'others_cash_flows', 'net_cash_flow', 'free_cash_flow',
                                   'beginning_balance', 'ending_balance']
 
+
+
+
 # 建立一個函數，判斷揭露財報日期是否為假日，如果為假日就先將其改為工作日
 def get_work_date(data_date):
     # 從資料庫抓出當年度國定假日資料
@@ -413,33 +294,6 @@ def get_work_date(data_date):
 
     return data_date
 
-# 爬取上市各類產業本益比（這邊要注意並不包含上櫃公司）
-def get_industry_per(year_month):
-    url = f"https://www.twse.com.tw/statistics/count?url=%2FstaticFiles%2Finspection%2Finspection%2F04%2F001%2F{year_month}_C04001.zip&l1=%E4%B8%8A%E5%B8%82%E5%85%AC%E5%8F%B8%E6%9C%88%E5%A0%B1&l2=%E3%80%90%E5%A4%A7%E7%9B%A4%E3%80%81%E5%90%84%E7%94%A2%E6%A5%AD%E9%A1%9E%E8%82%A1%E5%8F%8A%E4%B8%8A%E5%B8%82%E8%82%A1%E7%A5%A8%E6%9C%AC%E7%9B%8A%E6%AF%94%E3%80%81%E6%AE%96%E5%88%A9%E7%8E%87%E5%8F%8A%E8%82%A1%E5%83%B9%E6%B7%A8%E5%80%BC%E6%AF%94%E3%80%91%E6%9C%88%E5%A0%B1"
-    response = requests.get(url)
-    # 創建臨存檔案
-    tmp_file = tempfile.TemporaryFile()
-    # 將爬蟲下來的內容寫入臨存檔案
-    tmp_file.write(response.content)
-    my_zip = zipfile.ZipFile(tmp_file, mode='r')
-    file_name_list = []
-    for file_name in my_zip.namelist():
-        file_name_list.append(file_name)
-    # 打開zip壓縮檔內的excel檔案
-    result = pd.read_excel(my_zip.open(file_name_list[0]))
-    # 只取各大類產業的資料
-    industry_list = ['大 盤 ', '水泥工業類', '食品工業類', '塑膠工業類', '紡織纖維類', '電機機械類', '電器電纜類',
-                     '玻璃陶瓷類', '造紙工業類', '鋼鐵工業類', '橡膠工業類', '汽車工業類', '建材營造類', '航運業類',
-                     '觀光事業類', '金融保險類', '貿易百貨類', '其他類', '化學工業類', '生技醫療類', '油電燃氣類',
-                     '半導體類', '電腦及周邊設備類', '光電類', '通信網路類', '電子零組件類', '電子通路類', '資訊服務類',
-                     '其他電子類', '未含金融保險類', '未含電子類', '未含金融電子類', '水泥窯製類', '塑膠化工類', '機電類',
-                     '化學生技醫療類', '電子工業類']
-    result = result[result['P/E RATIO AND YIELD OF LISTED STOCKS'].isin(industry_list)][['P/E RATIO AND YIELD OF LISTED STOCKS', 'Unnamed: 5', 'Unnamed: 7', 'Unnamed: 9']]
-    result.columns = ['stock_industry', 'PER', 'yield', 'PBR']
-    result = result.replace('大 盤 ', '大盤')
-
-    return result
-
 if __name__ == '__main__':
     start_time = datetime.datetime.now()
     print('crawl_stock_fundamental_data.py')
@@ -448,10 +302,6 @@ if __name__ == '__main__':
     # 設定爬蟲時間
     data_date = datetime.datetime.now()
     data_date = data_date.strftime("%Y-%m-%d")
-
-    # 每月爬取大盤及各大類產業的本益比等資料的日期
-    industry_date = data_date[0:7] + '-07'
-    industry_date = get_work_date(data_date=industry_date)
 
     # 第一季財報，相關資料申報期限為每年的5/15，金控業期限為5/30
     # 第二季財報，相關資料申報期限為每年的8/14，金控業期限為8/31
@@ -468,10 +318,5 @@ if __name__ == '__main__':
         # 爬取一般產業財報相關資料
     elif data_date[5:10] in financial_date:
         # 爬取金控業財報相關資料
-    elif data_date == industry_date:
-        industry_year_month = datetime.datetime.now() - datetime.timedelta(30)
-        industry_year_month = industry_year_month.strftime("%Y-%m-%d")
-        # 每月爬取大盤及各大類產業的本益比等資料
-        industry_per = get_industry_per(year_month=industry_year_month[0:4] + industry_year_month[5:7])
-        industry_per['data_year_month'] = industry_year_month[0:7]
+
         
